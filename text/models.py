@@ -158,7 +158,7 @@ class MLP_I_AE(nn.Module):
         self.gpu = gpu
         noutput_mu = noutput
         noutput_var = noutput
-        
+
         layer_sizes = [ninput] + [int(x) for x in layers.split('-')]
         self.layers = []
 
@@ -180,22 +180,22 @@ class MLP_I_AE(nn.Module):
 
         self.linear_mu = nn.Linear(noutput, noutput_mu)
         self.linear_var = nn.Linear(noutput, noutput_var)
-        
+
         self.init_weights()
 
     def forward(self, x):
         for i, layer in enumerate(self.layers):
             x = layer(x)
         mu = self.linear_mu(x)
-        logvar = self.linear_var(x)    
+        logvar = self.linear_var(x)
         std = 0.5*logvar
         std = std.exp_()                                        # std
         epsilon = Variable(std.data.new(std.size()).normal_())  # normal noise with the same type and size as std.data
         if self.gpu:
             epsilon = epsilon.cuda()
-        
+
         sample = mu + (epsilon * std)
-        
+
         return sample
 
     def init_weights(self):
@@ -206,7 +206,7 @@ class MLP_I_AE(nn.Module):
                 layer.bias.data.fill_(0)
             except:
                 pass
-            
+
         self.linear_mu.weight.data.normal_(0, init_std)
         self.linear_mu.bias.data.fill_(0)
         self.linear_var.weight.data.normal_(0, init_std)
@@ -363,7 +363,7 @@ class Seq2SeqCAE(nn.Module):
                                        std=self.noise_radius)
             if self.gpu:
                 gauss_noise = gauss_noise.cuda()
-                
+
             hidden = hidden + to_gpu(self.gpu, Variable(gauss_noise))
 
         return hidden
@@ -562,7 +562,7 @@ class Seq2Seq(nn.Module):
 
         packed_output, state = self.decoder(packed_embeddings, state)
         output, lengths = pad_packed_sequence(packed_output, batch_first=True)
-        
+
         # reshape to batch_size*maxlen x nhidden before linear over vocab
         decoded = self.linear(output.contiguous().view(-1, self.nhidden))
         decoded = decoded.view(batch_size, maxlen, self.ntokens)
@@ -732,7 +732,7 @@ class Baseline_LSTM(nn.Module):
         for i in range(len(layer_sizes) - 1):
             layer = nn.Linear(layer_sizes[i], layer_sizes[i + 1])
             self.layers.add_module("layer" + str(i + 1), layer)
-            
+
             bn = nn.BatchNorm1d(layer_sizes[i + 1], eps=1e-05, momentum=0.1)
             self.layers.add_module("bn" + str(i + 1), bn)
 
@@ -740,24 +740,24 @@ class Baseline_LSTM(nn.Module):
 
         layer = nn.Linear(layer_sizes[-1], 3)
         self.layers.add_module("layer" + str(len(layer_sizes)), layer)
-        
+
         self.layers.add_module("softmax", nn.Softmax())
-        
+
         self.init_weights()
 
     def init_weights(self):
         initrange = 0.1
-    
+
         # Initialize Vocabulary Matrix Weight
         self.embedding_prem.weight.data.uniform_(-initrange, initrange)
         self.embedding_hypo.weight.data.uniform_(-initrange, initrange)
-    
+
         # Initialize Encoder and Decoder Weights
         for p in self.premise_encoder.parameters():
             p.data.uniform_(-initrange, initrange)
         for p in self.hypothesis_encoder.parameters():
             p.data.uniform_(-initrange, initrange)
-    
+
         # Initialize Linear Weight
         init_std = 0.02
         for layer in self.layers:
@@ -777,7 +777,7 @@ class Baseline_LSTM(nn.Module):
         self.grad_norm = norm.detach().data.mean()
         return grad
 
-        
+
     def forward(self, batch):
         premise_indices, hypothesis_indices = batch
         batch_size = premise_indices.size(0)
@@ -788,13 +788,13 @@ class Baseline_LSTM(nn.Module):
         hidden_prem= hidden_prem[-1]
         if hidden_prem.requires_grad:
             hidden_prem.register_hook(self.store_grad_norm)
-                
+
         hypothesis = self.embedding_hypo(hypothesis_indices)
         output_hypo, (hidden_hypo, _) = self.hypothesis_encoder(hypothesis, state_hypo)
         hidden_hypo= hidden_hypo[-1]
         if hidden_hypo.requires_grad:
             hidden_hypo.register_hook(self.store_grad_norm)
-            
+
         concatenated = torch.cat([hidden_prem, hidden_hypo], 1)
         probs = self.layers(concatenated)
         return probs
@@ -809,14 +809,37 @@ class Baseline_Embeddings(nn.Module):
         embeddings_mat = load_embeddings()
         self.embedding_prem.weight.data.copy_(embeddings_mat)
         self.embedding_hypo.weight.data.copy_(embeddings_mat)
-        
+
     def forward(self, batch):
         premise_indices, hypothesis_indices = batch
         enc_premise = self.embedding_prem(premise_indices)
         enc_hypothesis = self.embedding_hypo(hypothesis_indices)
         enc_premise = torch.mean(enc_premise,1).squeeze(1)
         enc_hypothesis = torch.mean(enc_hypothesis,1).squeeze(1)
-        
+
         concatenated = torch.cat([enc_premise, enc_hypothesis], 1)
         probs = self.linear(concatenated)
         return probs
+
+class MLPClassifier(nn.Module):
+    def __init__(self, input_size, output_size, layers=None):
+        super(MLPClassifier, self).__init__()
+        last_size = input_size
+        layer_sizes = list(map(int, layers.split('-')))
+
+        self.layers = nn.Sequential()
+        for i, lsize in enumerate(layer_sizes):
+            layer = nn.Linear(last_size, lsize)
+            self.layers.add_module('layer' + i, layer)
+            bn = nn.BatchNorm1d(lsize, eps=1e-05, momentum=0.1)
+            self.layers.add_module('bn' + i, bn)
+            self.layers.add_module("activation" + i, nn.ReLU())
+            last_size = lsize
+
+        self.linear = nn.Linear(last_size, output_size)
+        self.softmax = nn.Softmax()
+
+    def forward(self, x):
+        return self.softmax(self.linear(self.layers(x)))
+
+
