@@ -106,7 +106,7 @@ class Corpus(object):
                 else:
                     words = line[:-1].split(" ")
                 for word in words:
-                    word = word.decode('Windows-1252').encode('utf-8')
+                    # word = word.decode('Windows-1252').encode('utf-8')
                     self.dictionary.add_word(word)
 
         # prune the vocabulary
@@ -273,7 +273,7 @@ class SNLIDataset(data.Dataset):
             self.make_vocab()
             
         if os.path.exists(self.root+"/sent_ids.pkl"):
-            self.sentence_ids = pkl.load(open(self.root+"/sent_ids.pkl",'r'))
+            self.sentence_ids = pkl.load(open(self.root+"/sent_ids.pkl",'rb'))
         else:
             print("Sentence IDs not found!!")
             
@@ -312,8 +312,8 @@ class SNLIDataset(data.Dataset):
 
         # prune the vocabulary
         self.dictionary.prune_vocab(k=self.vocab_size, cnt=False)
-        pkl.dump(self.sentence_ids, open(self.root+"/sent_ids.pkl", 'w'))
-        pkl.dump(self.dictionary.word2idx, open(self.root+"/vocab_"+str(len(self.dictionary.word2idx))+".pkl", 'w'))
+        pkl.dump(self.sentence_ids, open(self.root+"/sent_ids.pkl", 'wb'))
+        pkl.dump(self.dictionary.word2idx, open(self.root+"/vocab_"+str(len(self.dictionary.word2idx))+".pkl", 'wb'))
 
     def get_indices(self, words):
         vocab = self.dictionary.word2idx
@@ -386,19 +386,19 @@ class SNLIDataset(data.Dataset):
 def load_embeddings(root = './data/classifier/'):
     vocab_path=root+'vocab.pkl'
     file_path=root+'embeddings'
-    vocab = pkl.load(open(vocab_path, 'r'))
+    vocab = pkl.load(open(vocab_path, 'rb'))
     
     embeddings = torch.FloatTensor(len(vocab),100).uniform_(-0.1, 0.1)
     embeddings[0].fill_(0)
     embeddings[1].copy_(torch.FloatTensor(
-        map(float, open(file_path).read().split('\n')[0].strip().split(" ")[1:])))
+        list(map(float, open(file_path).read().split('\n')[0].strip().split(" ")[1:]))))
     embeddings[2].copy_(embeddings[1])
     
     with open(file_path) as fr:
         for line in fr:
             elements=line.strip().split(" ")
             word = elements[0]
-            emb = torch.FloatTensor(map(float, elements[1:]))
+            emb = torch.FloatTensor(list(map(float, elements[1:])))
             if word in vocab:
                 embeddings[vocab[word]].copy_(emb)
             

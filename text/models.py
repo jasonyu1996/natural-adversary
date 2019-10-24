@@ -359,7 +359,7 @@ class Seq2SeqCAE(nn.Module):
         hidden = torch.div(hidden, norms.expand_as(hidden))
 
         if noise and self.noise_radius > 0:
-            gauss_noise = torch.normal(means=torch.zeros(hidden.size()),
+            gauss_noise = torch.normal(mean=torch.zeros(hidden.size()),
                                        std=self.noise_radius)
             if self.gpu:
                 gauss_noise = gauss_noise.cuda()
@@ -538,7 +538,7 @@ class Seq2Seq(nn.Module):
         hidden = torch.div(hidden, norms.expand_as(hidden))
 
         if noise and self.noise_radius > 0:
-            gauss_noise = torch.normal(means=torch.zeros(hidden.size()),
+            gauss_noise = torch.normal(mean=torch.zeros(hidden.size()),
                                        std=self.noise_radius)
             hidden = hidden + to_gpu(self.gpu, Variable(gauss_noise))
 

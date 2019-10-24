@@ -186,9 +186,9 @@ def train_ae(batch, total_loss_ae, start_time, i,
         # accuracy
         probs = F.softmax(masked_output)
         max_vals, max_indices = torch.max(probs, 1)
-        accuracy = torch.mean(max_indices.eq(masked_target).float()).data[0]
+        accuracy = torch.mean(max_indices.eq(masked_target).float()).item()
 
-        cur_loss = total_loss_ae[0] / args.log_interval
+        cur_loss = total_loss_ae.item() / args.log_interval
         elapsed = time.time() - start_time
         print('| epoch {:3d} | {:5d}/{:5d} batches | ms/batch {:5.2f} | '
               'loss {:5.2f} | ppl {:8.2f} | acc {:8.2f}'
@@ -479,11 +479,11 @@ def evaluate_autoencoder(data_source, epoch,
         flattened_output = output.view(-1, ntokens)
 
         masked_output = flattened_output.masked_select(output_mask).view(-1, ntokens)
-        total_loss += criterion_ce(masked_output/args.temp, masked_target).data
+        total_loss += criterion_ce(masked_output/args.temp, masked_target).item()
 
         # accuracy
         max_vals, max_indices = torch.max(masked_output, 1)
-        all_accuracies += torch.mean(max_indices.eq(masked_target).float()).data[0]
+        all_accuracies += torch.mean(max_indices.eq(masked_target).float()).item()
         bcnt += 1
 
         aeoutf = "./output/{}/{}_autoencoder.txt".format(args.outf, epoch)
@@ -501,7 +501,7 @@ def evaluate_autoencoder(data_source, epoch,
                 f.write(chars)
                 f.write("\n\n")
 
-    return total_loss[0] / len(data_source), all_accuracies/bcnt
+    return total_loss / len(data_source), all_accuracies/bcnt
 
 
 def save_model(args, autoencoder, gan_gen, gan_disc, inverter, epoch=None):
@@ -636,7 +636,7 @@ def perturb(data_source, epoch, corpus_test, hybrid=False):
                     f.write("========================================================\n")
                     f.write("\n".join(all_adv) + "\n")
                     f.flush()
-                except Exception, e:
+                except Exception as e:
                     print(e)
                     print(premise_words)
                     print(hypothesise_words)
@@ -723,11 +723,11 @@ if __name__ == '__main__':
 
     classifier1 = Baseline_Embeddings(100, vocab_size=args.vocab_size+4)
     classifier1.load_state_dict(torch.load(args.classifier_path + "/baseline/model_emb.pt"))
-    vocab_classifier1 = pkl.load(open(args.classifier_path + "/vocab.pkl", 'r'))
+    vocab_classifier1 = pkl.load(open(args.classifier_path + "/vocab.pkl", 'rb'))
 
     classifier2 = Baseline_LSTM(100, 300, maxlen=10, gpu=args.cuda)
     classifier2.load_state_dict(torch.load(args.classifier_path + "/baseline/model_lstm.pt"))
-    vocab_classifier2 = pkl.load(open(args.classifier_path + "/vocab.pkl", 'r'))
+    vocab_classifier2 = pkl.load(open(args.classifier_path + "/vocab.pkl", 'rb'))
 
     print("Loaded data and target classifiers!")
 
@@ -776,7 +776,7 @@ if __name__ == '__main__':
         gan_disc = MLP_D(ninput=args.nhidden, noutput=1, layers=args.arch_d)
         # dumping vocabulary
         with open('./output/{}/vocab.json'.format(args.outf), 'w') as f:
-            json.dump(corpus.dictionary.word2idx, f, encoding='utf-8')
+            json.dump(corpus.dictionary.word2idx, f)
 
     print(autoencoder)
     print(inverter)
@@ -915,14 +915,14 @@ if __name__ == '__main__':
                     print('[%d/%d][%d/%d] Loss_D: %.8f (Loss_D_real: %.8f '
                           'Loss_D_fake: %.8f) Loss_G: %.8f Loss_I: %.8f'
                           % (epoch, args.epochs, niter, len(train_data),
-                             errD.data[0], errD_real.data[0],
-                             errD_fake.data[0], errG.data[0], errI.data[0]))
+                             errD.item(), errD_real.item(),
+                             errD_fake.item(), errG.item(), errI.item()))
                     with open("./output/{}/logs.txt".format(args.outf), 'a') as f:
                         f.write('[%d/%d][%d/%d] Loss_D: %.8f (Loss_D_real: %.8f '
                                 'Loss_D_fake: %.8f) Loss_G: %.8f Loss_I: %.8f\n'
                                 % (epoch, args.epochs, niter, len(train_data),
-                                   errD.data[0], errD_real.data[0],
-                                   errD_fake.data[0], errG.data[0], errI.data[0]))
+                                   errD.item(), errD_real.item(),
+                                   errD_fake.item(), errG.item(), errI.item()))
 
                     # exponentially decaying noise on autoencoder
                     autoencoder.noise_radius = autoencoder.noise_radius * args.noise_anneal
@@ -959,7 +959,7 @@ if __name__ == '__main__':
                 if niter_global % 100 == 0:
                     with open("./output/{}/logs.txt".format(args.outf), 'a') as f:
                         f.write('[%d/%d][%d/%d] Loss_I: %.8f \n'
-                                % (epoch, args.epochs, niter, len(train_data), errI.data[0]))
+                                % (epoch, args.epochs, niter, len(train_data), errI.item()))
 
         # end of epoch ----------------------------
         # evaluation
