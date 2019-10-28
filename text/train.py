@@ -739,16 +739,16 @@ if __name__ == '__main__':
     print("Vocabulary Size: {}".format(ntokens))
 
     if args.reload_exp or args.load_pretrained:
-        autoencoder = torch.load(open(cur_dir + '/models/autoencoder_model.pt'))
-        gan_gen = torch.load(open(cur_dir + '/models/gan_gen_model.pt'))
-        gan_disc = torch.load(open(cur_dir + '/models/gan_disc_model.pt'))
+        autoencoder = torch.load(open(cur_dir + '/models/autoencoder_model.pt', 'rb'))
+        gan_gen = torch.load(open(cur_dir + '/models/gan_gen_model.pt', 'rb'))
+        gan_disc = torch.load(open(cur_dir + '/models/gan_disc_model.pt', 'rb'))
         with open(cur_dir + '/vocab.json', 'r') as f:
             corpus.dictionary.word2idx = json.load(f)
 
         if args.load_pretrained:
             inverter = MLP_I(args.nhidden, args.z_size, args.arch_i, gpu=args.cuda)
         else:
-            inverter = torch.load(open(cur_dir + '/models/inverter_model.pt'))
+            inverter = torch.load(open(cur_dir + '/models/inverter_model.pt', 'rb'))
     else:
         if args.convolution_enc:
             autoencoder = Seq2SeqCAE(emsize=args.emsize,
