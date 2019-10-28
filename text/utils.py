@@ -355,6 +355,7 @@ class SNLIDataset(data.Dataset):
                 hypothesis_indices = [vocab[w] if w in vocab else unk_idx for w in hypothesis_words]
                 premise_indices = [vocab[w] if w in vocab else unk_idx for w in premise_words]
                 premise_words = [w if w in vocab else '<oov>' for w in premise_words]
+                premise_length = min(len(premise_words), self.maxlen)
                 hypothesis_words = [w if w in vocab else '<oov>' for w in hypothesis_words]
                 hypothesis_length = min(len(hypothesis_words), self.maxlen)
                 #hypothesis_length = max(hypothesis_length, self.maxlen)
@@ -373,7 +374,8 @@ class SNLIDataset(data.Dataset):
                 hypothesis_words = hypothesis_words[:self.maxlen]
                 
                 if self.train:
-                    lines.append([premise_indices, hypothesis_indices, label])
+                    lines.append([premise_indices, hypothesis_indices, label,
+                                  premise_words, hypothesis_words, premise_length, hypothesis_length])
                 else:
                     lines.append([premise_indices, hypothesis_indices, label,
                                   premise_words, hypothesis_words, hypothesis_length])
@@ -415,22 +417,27 @@ def get_delta(tensor, right, z_range, gpu):
     samples_delta_z = to_gpu(gpu,torch.FloatTensor(samples_delta_z[:num_sample]).view(bs, dim))
     return samples_delta_z
 
-
 def collate_snli(batch):
     premise=[]
     hypothesis=[]
     labels =[]
-    lengths = []
+    p_lengths = []
+    h_lengths = []
     premise_words = []
     hypothesis_words = []
     
-    if len(batch[0]) == 3:
+    if len(batch[0]) == 7:
         for b in batch:
-            x, y, z  = b
+            x, y, z , p, h, pl, l = b
             premise.append(x)
             hypothesis.append(y)
             labels.append(z)
-        return Variable(torch.LongTensor(premise)), Variable(torch.LongTensor(hypothesis)), Variable(torch.LongTensor(labels)) 
+            p_lengths.append(pl)
+            h_lengths.append(l)
+            premise_words.append(p)
+            hypothesis_words.append(h)
+        return Variable(torch.LongTensor(premise)), Variable(torch.LongTensor(hypothesis)), \
+                Variable(torch.LongTensor(labels)) , premise_words,hypothesis_words , p_lengths, h_lengths
     elif len(batch[0]) == 6:
         for b in batch:
             x, y, z , p, h, l = b
@@ -441,7 +448,7 @@ def collate_snli(batch):
             premise_words.append(p)
             hypothesis_words.append(h)
             
-        return Variable(torch.LongTensor(premise)), Variable(torch.LongTensor(hypothesis)), \
-                    Variable(torch.LongTensor(labels)) , premise_words,hypothesis_words , lengths      
+        return Variable(torch.LongTensor(premise)), Variable(torch.LongTensor(hypothesis)),\
+                Variable(torch.LongTensor(labels)) , premise_words,hypothesis_words , lengths      
     else:
         print("sentence length doesn't match")

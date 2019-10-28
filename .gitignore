@@ -102,3 +102,6 @@ ENV/
 
 text/output/
 text/*.txt
+
+text/data/classifier/*.pkl
+text/surrogate/

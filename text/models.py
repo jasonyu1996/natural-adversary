@@ -830,16 +830,17 @@ class MLPClassifier(nn.Module):
         self.layers = nn.Sequential()
         for i, lsize in enumerate(layer_sizes):
             layer = nn.Linear(last_size, lsize)
-            self.layers.add_module('layer' + i, layer)
+            self.layers.add_module('layer' + str(i), layer)
             bn = nn.BatchNorm1d(lsize, eps=1e-05, momentum=0.1)
-            self.layers.add_module('bn' + i, bn)
-            self.layers.add_module("activation" + i, nn.ReLU())
+            self.layers.add_module('bn' + str(i), bn)
+            self.layers.add_module("activation" + str(i), nn.ReLU())
             last_size = lsize
 
         self.linear = nn.Linear(last_size, output_size)
-        self.softmax = nn.Softmax()
+        self.log_softmax = nn.LogSoftmax(1)
 
-    def forward(self, x):
-        return self.softmax(self.linear(self.layers(x)))
+    def forward(self, z_prem, z_hypo):
+        x = torch.cat((z_prem, z_hypo), 1)
+        return self.log_softmax(self.linear(self.layers(x)))
 
 
