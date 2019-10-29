@@ -378,7 +378,7 @@ class SNLIDataset(data.Dataset):
                                   premise_words, hypothesis_words, premise_length, hypothesis_length])
                 else:
                     lines.append([premise_indices, hypothesis_indices, label,
-                                  premise_words, hypothesis_words, hypothesis_length])
+                                  premise_words, hypothesis_words, premise_length, hypothesis_length])
 
         print("Number of sentences dropped from {}: {} out of {} total".
               format(path, dropped, linecount))
@@ -440,15 +440,16 @@ def collate_snli(batch):
                 Variable(torch.LongTensor(labels)) , premise_words,hypothesis_words , p_lengths, h_lengths
     elif len(batch[0]) == 6:
         for b in batch:
-            x, y, z , p, h, l = b
+            x, y, z , p, h, pl, l = b
             premise.append(x)
             hypothesis.append(y)
             labels.append(z)
-            lengths.append(l)
+            p_lengths.append(pl)
+            h_lengths.append(l)
             premise_words.append(p)
             hypothesis_words.append(h)
             
         return Variable(torch.LongTensor(premise)), Variable(torch.LongTensor(hypothesis)),\
-                Variable(torch.LongTensor(labels)) , premise_words,hypothesis_words , lengths      
+                Variable(torch.LongTensor(labels)) , premise_words,hypothesis_words , p_lengths, h_lengths      
     else:
         print("sentence length doesn't match")

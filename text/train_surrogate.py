@@ -24,7 +24,7 @@ parser.add_argument('--batch_size', type=int, default=32, metavar='N',
                     help='batch size')
 parser.add_argument('--packed_rep', type=bool, default=True,
                     help='pad all sentences to fixed maxlen')
-parser.add_argument('--train_mode', type=bool, default=True,
+parser.add_argument('--train_mode', action='store_true',
                     help='set training mode')
 parser.add_argument('--maxlen', type=int, default=10,
                     help='maximum sentence length')
@@ -53,8 +53,8 @@ cur_dir = './output/%s/' % args.load_pretrained
 with open(cur_dir + '/vocab.json', 'r') as fin:
     corpus_vocab = json.load(fin)
 
-corpus_train = SNLIDataset(train=True, vocab_size=args.vocab_size, path=args.data_path, reset_vocab=corpus_vocab)
-corpus_test = SNLIDataset(train=False, vocab_size=args.vocab_size, path=args.data_path, reset_vocab=corpus_vocab)
+corpus_train = SNLIDataset(train=True, vocab_size=args.vocab_size-4, path=args.data_path)
+corpus_test = SNLIDataset(train=False, vocab_size=args.vocab_size-4, path=args.data_path)
 trainloader= torch.utils.data.DataLoader(corpus_train, batch_size = args.batch_size, collate_fn=collate_snli, shuffle=True)
 train_iter = iter(trainloader)
 testloader= torch.utils.data.DataLoader(corpus_test, batch_size = args.batch_size, collate_fn=collate_snli, shuffle=False)
@@ -62,6 +62,8 @@ testloader= torch.utils.data.DataLoader(corpus_test, batch_size = args.batch_siz
 random.seed(args.seed)
 np.random.seed(args.seed)
 torch.manual_seed(args.seed)
+
+EPS = 3e-2
 
 
 
@@ -71,7 +73,8 @@ autoencoder = torch.load(open(cur_dir + '/models/autoencoder_model.pt', 'rb'))
 inverter = torch.load(open(cur_dir + '/models/inverter_model.pt', 'rb'))
 
 classifier1 = Baseline_Embeddings(100, vocab_size=args.vocab_size)
-classifier1.load_state_dict(torch.load(args.classifier_path + "/baseline/model_emb.pt"))
+#classifier1 = Baseline_LSTM(100,300,maxlen=args.maxlen, gpu=args.cuda)
+classifier1.load_state_dict(torch.load(args.classifier_path + "/baseline/emb.pt"))
 vocab_classifier1 = pkl.load(open(args.classifier_path + "/vocab.pkl", 'rb'))
 
 mlp_classifier = MLPClassifier(args.z_size * 2, 3, layers='100-50')
@@ -85,25 +88,56 @@ optimizer = optim.Adam(mlp_classifier.parameters(),
                            lr=args.lr,
                            betas=(args.beta1, 0.999))
 
+from torch.autograd import Variable
+
+def evaluate_model():
+    classifier1.eval()
+
+    test_iter = iter(trainloader)
+    correct=0
+    total=0
+    for batch in test_iter:
+        premise, hypothesis, target, _, _, _, _ = batch
+        
+        if args.cuda:
+            premise=premise.cuda()
+            hypothesis = hypothesis.cuda()
+            target = target.cuda()
+            
+        prob_distrib = classifier1.forward((premise, hypothesis))
+        predictions = np.argmax(prob_distrib.data.cpu().numpy(), 1)
+        correct+=len(np.where(target.data.cpu().numpy()==predictions)[0])
+        total+=premise.size(0)
+    acc=correct/float(total)
+    print("Accuracy:{0}".format(acc))
+    return acc
+        
+
 if args.cuda:
+    autoencoder.gpu = True
     autoencoder = autoencoder.cuda()
+    autoencoder.start_symbols = autoencoder.start_symbols.cuda()
     #gan_gen = gan_gen.cuda()
     #gan_disc = gan_disc.cuda()
     classifier1 = classifier1.cuda()
     inverter = inverter.cuda()
     mlp_classifier = mlp_classifier.cuda()
 else:
+    autoencoder.gpu = False
     autoencoder = autoencoder.cpu()
+    autoencoder.start_symbols = autoencoder.start_symbols.cpu()
     #gan_gen = gan_gen.cpu()
     #gan_disc = gan_disc.cpu()
     classifier1 = classifier1.cpu()
     inverter = inverter.cpu()
     mlp_classifier = mlp_classifier.cpu()
 
-
-
-
 def train_process(premise, hypothesis, target, premise_words, hypothesis_words, premise_length, hypothesis_length):
+    #mx = target.max().item()
+    #assert(mx >= 0 and mx < 3)
+    #for s, s_w in zip(premise, premise_words):
+    #    for i, w in zip(s, s_w):
+    #        assert(corpus_vocab.get(w, 3) == i)
     #print(hypothesis_words, flush=True)
     autoencoder.eval()
     inverter.eval()
@@ -113,22 +147,25 @@ def train_process(premise, hypothesis, target, premise_words, hypothesis_words, 
     #print(premise.max().item(), flush=True)
     #print(hypothesis.max().item(), flush=True)
 
-    c_prem = autoencoder.encode(premise, premise_length, noise=False)
+    premise_idx = torch.tensor([[corpus_vocab.get(w, 3) for w in s] for s in premise_words]).cuda()
+    hypothesis_idx = torch.tensor([[corpus_vocab.get(w, 3) for w in s] for s in hypothesis_words]).cuda()
+
+    c_prem = autoencoder.encode(premise_idx, premise_length, noise=False)
     z_prem = inverter(c_prem).detach()
 
-    c_hypo = autoencoder.encode(hypothesis, hypothesis_length, noise=False)
+    c_hypo = autoencoder.encode(hypothesis_idx, hypothesis_length, noise=False)
     z_hypo = inverter(c_hypo).detach()
 
     # z_comb = nn.cat((z_prem, z_hypo), 0).detach()
 
-    premise_idx = torch.tensor([[vocab_classifier1.get(w, 3) for w in s] for s in premise_words]).cuda()
-    hypothesis_idx = torch.tensor([[vocab_classifier1.get(w, 3) for w in s] for s in hypothesis_words]).cuda()
-
     output = mlp_classifier(z_prem, z_hypo)
-    gold = classifier1((premise_idx, hypothesis_idx)).detach()
+    gold = classifier1((premise, hypothesis)).detach()
 
     #print(output.shape, flush=True)
     #print(gold.shape, flush=True)
+
+    acc = (torch.argmax(gold, 1) == target).to(torch.float32).mean().item()
+    acc_surrogate = (torch.argmax(output, 1) == target).to(torch.float32).mean().item()
 
 
     loss = -torch.mean(torch.sum(output * F.softmax(gold, dim=1), 1), 0)
@@ -136,14 +173,67 @@ def train_process(premise, hypothesis, target, premise_words, hypothesis_words, 
     loss.backward()
     optimizer.step()
 
-    return loss.item()
+    return loss.item(), acc, acc_surrogate
 
 
-best_accuracy = 0
+def perturb(criterion, premise, hypothesis, target, premise_words, hypothesis_words, premise_length, hypothesis_length):
+    autoencoder.eval()
+    inverter.eval()
+    classifier1.eval()
+    mlp_classifier.eval()
+
+    premise_words = [premise_words]
+    hypothesis_words = [hypothesis_words]
+    premise_length = [premise_length]
+    hypothesis_length = [hypothesis_length]
+
+
+    premise_idx = torch.tensor([[corpus_vocab.get(w, 3) for w in s] for s in premise_words]).cuda()
+    hypothesis_idx = torch.tensor([[corpus_vocab.get(w, 3) for w in s] for s in hypothesis_words]).cuda()
+
+    c_prem = autoencoder.encode(premise_idx, premise_length, noise=False)
+    z_prem = inverter(c_prem).detach()
+
+    c_hypo = autoencoder.encode(hypothesis_idx, hypothesis_length, noise=False).detach()
+    c_hypo.requires_grad = True
+    z_hypo = inverter(c_hypo)
+
+
+    premise = premise.unsqueeze(0)
+    hypothesis = hypothesis.unsqueeze(0)
+    target = target.unsqueeze(0)
+    
+    output = mlp_classifier(z_prem, z_hypo)
+
+    loss = criterion(output, target)
+    mlp_classifier.zero_grad()
+    inverter.zero_grad()
+    loss.backward()
+
+    direction = torch.sign(c_hypo.grad)
+    nc_hypo = c_hypo + EPS * direction
+    nhypo_idx = autoencoder.generate(nc_hypo, 10, False)
+
+    return nhypo_idx.squeeze(0).cpu().numpy()
+
+
+def classifier_pred(pw, hw):
+    classifier1.eval()
+
+    premise_idx = torch.tensor([vocab_classifier1.get(w, 3) for w in pw]).cuda().unsqueeze(0)
+    hypothesis_idx = torch.tensor([vocab_classifier1.get(w, 3) for w in hw]).cuda().unsqueeze(0)
+
+    return F.softmax(classifier1((premise_idx, hypothesis_idx)), 1).squeeze(0).cpu().detach().numpy()
+    
+
 if args.train_mode:
+    # evaluate_model()
+
     for epoch in range(0, args.epochs):
         niter = 0
         loss_total = 0
+        accuracy_sum = 0.0
+        accuracy_surrogate_sum = 0.0
         while niter < len(trainloader):
             niter+=1
             premise, hypothesis, target, premise_words, hypothesis_words, premise_length, hypothesis_length = train_iter.next()
@@ -154,8 +244,15 @@ if args.train_mode:
                 hypothesis = hypothesis.cuda()
                 target = target.cuda()
 
-            loss_total += train_process(premise, hypothesis, target, premise_words, hypothesis_words, premise_length, hypothesis_length)
-        print(loss_total/float(niter))
+            loss, acc, acc_surrogate = train_process(premise, hypothesis, target, premise_words, hypothesis_words, premise_length, hypothesis_length)
+            loss_total += loss
+            accuracy_sum += acc
+            accuracy_surrogate_sum += acc_surrogate
+            if niter % 10 == 0:
+                print(loss_total/10, accuracy_sum/10, accuracy_surrogate_sum/10)
+                loss_total = 0.0
+                accuracy_sum = 0.0
+                accuracy_surrogate_sum = 0.0
         train_iter = iter(trainloader)
         # curr_acc = evaluate_model()
         # if curr_acc > best_accuracy:
@@ -165,3 +262,25 @@ if args.train_mode:
         # best_accuracy = curr_acc
 
     # print("Best accuracy :{0}".format(best_accuracy))
+else:
+    # gen perturbations
+
+    criterion = nn.CrossEntropyLoss().cuda()
+    
+    niter = 0
+
+    idx2words = dict(map(lambda x: (x[1], x[0]), corpus_vocab.items()))
+    while niter < len(testloader):
+        niter += 1
+        batch = train_iter.next()
+        for p, h, t, pw, hw, pl, hl in zip(*batch):
+            nh = perturb(criterion, p.cuda(), h.cuda(), t.cuda(), pw, hw, pl, hl)
+            print('--------------------------------')
+            print('Target ', t)
+            print(' '.join(pw))
+            print(' '.join(hw))
+            nhw = (['<sos>'] + [idx2words[i] for i in nh])[:10]
+            print(' '.join(nhw))
+            print('Old ', classifier_pred(pw, hw))
+            print('New ', classifier_pred(pw, nhw))
+
