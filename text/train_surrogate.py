@@ -46,6 +46,10 @@ parser.add_argument('--z_size', type=int, default=100,
                     help='dimension of random noise z to feed into generator')
 parser.add_argument('--load_pretrained', type=str, required=True,
                     help='load a pre-trained encoder and decoder to train the inverter')
+parser.add_argument('--surrogate-layers', type=str, default='100-50',
+                    help='hidden layer sizes of the surrogate model')
+parser.add_argument('--perturb-budget', type=float, default=3e-2,
+                    help='the budget for making perturbations by the adversary')
 args = parser.parse_args()
 
 cur_dir = './output/%s/' % args.load_pretrained
@@ -63,7 +67,7 @@ random.seed(args.seed)
 np.random.seed(args.seed)
 torch.manual_seed(args.seed)
 
-EPS = 3e-2
+EPS = args.perturb_budget
 
 
 
@@ -77,7 +81,9 @@ classifier1 = Baseline_Embeddings(100, vocab_size=args.vocab_size)
 classifier1.load_state_dict(torch.load(args.classifier_path + "/baseline/emb.pt"))
 vocab_classifier1 = pkl.load(open(args.classifier_path + "/vocab.pkl", 'rb'))
 
-mlp_classifier = MLPClassifier(args.z_size * 2, 3, layers='100-50')
+mlp_classifier = MLPClassifier(args.z_size * 2, 3, layers=args.surrogate_layers)
+if not args.train_mode:
+    mlp_classifier.load_state_dict(torch.load(args.save_path+'/surrogate{0}.pt'.format(args.surrogate_layers)))
 
 print(classifier1)
 print(autoencoder)
@@ -257,7 +263,7 @@ if args.train_mode:
         # curr_acc = evaluate_model()
         # if curr_acc > best_accuracy:
         print("saving model...")
-        with open(args.save_path+'/surrogate.pt', 'wb') as f:
+        with open(args.save_path+'/surrogate{}.pt'.format(args.surrogate_layers), 'wb') as f:
             torch.save(mlp_classifier.state_dict(), f)
         # best_accuracy = curr_acc
 
