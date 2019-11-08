@@ -102,3 +102,11 @@ ENV/
 
 text/output/
 text/*.txt
+
+data
+game_output
+keep
+models
+output
+__pycache__
+*.py

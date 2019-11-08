@@ -105,9 +105,9 @@ def main(args):
                     lowercase=model_args['lowercase'])
     if args.test:
         eval_batch_size = 1
-        test_data = batchify(corpus.test, eval_batch_size, shuffle=False)
+        test_data = batchify(corpus.test, eval_batch_size, corpus.maxlen, shuffle=False)
     else:
-        train_data = batchify(corpus.train, model_args['batch_size'], shuffle=True)
+        train_data = batchify(corpus.train, model_args['batch_size'], corpus.maxlen, shuffle=True)
 
     print("Loaded data!")
 

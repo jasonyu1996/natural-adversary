@@ -60,8 +60,8 @@ parser.add_argument('--vocab_size', type=int, default=11004,
 
 args = parser.parse_args()
 
-corpus_train = SNLIDataset(train=True, vocab_size=args.vocab_size, path=args.data_path)
-corpus_test = SNLIDataset(train=False, vocab_size=args.vocab_size, path=args.data_path)
+corpus_train = SNLIDataset(train=True, vocab_size=args.vocab_size-4, path=args.data_path)
+corpus_test = SNLIDataset(train=False, vocab_size=args.vocab_size-4, path=args.data_path)
 trainloader= torch.utils.data.DataLoader(corpus_train, batch_size = args.batch_size, collate_fn=collate_snli, shuffle=True)
 train_iter = iter(trainloader)
 testloader= torch.utils.data.DataLoader(corpus_test, batch_size = args.batch_size, collate_fn=collate_snli, shuffle=False)
@@ -80,7 +80,7 @@ if args.cuda:
 optimizer = optim.Adam(baseline_model.parameters(),
                            lr=args.lr,
                            betas=(args.beta1, 0.999))
-criterion = nn.CrossEntropyLoss()
+criterion = nn.CrossEntropyLoss().cuda()
 
 best_accuracy = 0
 if args.train_mode:
@@ -89,7 +89,7 @@ if args.train_mode:
         loss_total = 0
         while niter < len(trainloader):
             niter+=1
-            premise, hypothesis, target = train_iter.next()
+            premise, hypothesis, target, _, _, _, _ = train_iter.next()
             if args.cuda:
                 premise=premise.cuda()
                 hypothesis = hypothesis.cuda()
@@ -99,7 +99,7 @@ if args.train_mode:
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            loss_total += loss.data[0]
+            loss_total += loss.item()
         print(loss_total/float(niter))
         train_iter = iter(trainloader)
         curr_acc = evaluate_model()
