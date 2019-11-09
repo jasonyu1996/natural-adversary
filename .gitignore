@@ -109,4 +109,3 @@ keep
 models
 output
 __pycache__
-*.py
