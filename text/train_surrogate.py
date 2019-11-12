@@ -222,6 +222,81 @@ def perturb(criterion, premise, hypothesis, target, premise_words, hypothesis_wo
 
     return nhypo_idx.squeeze(0).cpu().numpy()
 
+def cross_entropy(p, q):
+    q = torch.log(q)
+    a = p * q
+    a = torch.sum(a)
+    a = -a
+    return a
+
+def perturb_new(criterion, premise, hypothesis, target, premise_words, hypothesis_words, premise_length, hypothesis_length):
+    autoencoder.eval()
+    inverter.eval()
+    classifier1.eval()
+    mlp_classifier.eval()
+
+    premise_words = [premise_words]
+    hypothesis_words = [hypothesis_words]
+    premisea_length = [premise_length]
+    hypothesis_length = [hypothesis_length]
+
+
+    premise_idx = torch.tensor([[corpus_vocab.get(w, 3) for w in s] for s in premise_words]).cuda()
+    hypothesis_idx = torch.tensor([[corpus_vocab.get(w, 3) for w in s] for s in hypothesis_words]).cuda()
+
+    c_prem = autoencoder.encode(premise_idx, premise_length, noise=False)
+    z_prem = inverter(c_prem).detach()
+
+    c_hypo = autoencoder.encode(hypothesis_idx, hypothesis_length, noise=False).detach()
+    c_hypo.requires_grad = True
+    z_hypo = inverter(c_hypo)
+
+    premise = premise.unsqueeze(0)
+    hypothesis = hypothesis.unsqueeze(0)
+    target = target.unsqueeze(0)
+
+#     output = torch.nn.functional.softmax(mlp_classifier(z_prem, z_hypo))
+#     output2 = torch.nn.functional.softmax(classifier1.forward((premise_idx, hypothesis_idx))).detach()
+#     print("output")
+#     print(output)
+#     print("output2")
+#     print(output2)
+
+#     loss = criterion(output, target)
+    mlp_classifier.zero_grad()
+    inverter.zero_grad()
+#     loss.backward()
+#     loss2 = criterion(output2, target)
+
+#     direction = torch.sign(c_hypo.grad)
+#     nc_hypo = c_hypo + EPS * direction
+#     nhypo_idx = autoencoder.generate(nc_hypo, 10, False)
+#     z_hypoprime = inverter(nc_hypo).detach()
+
+#     output3 = torch.nn.functional.softmax(mlp_classifier(z_prem, z_hypoprime))
+#     print("output3")
+#     print(output3)
+#     loss3 = criterion(output3, target)
+#     print(loss3)
+
+#     loss4 = cross_entropy(output3, output2)
+#     print("loss4")
+#     print(loss4)
+
+    c_hypoprime = [{'params': c_hypo}]
+    optimizer = torch.optim.Adam(c_hypoprime)
+    for i in range(1000):
+        output2 = torch.nn.functional.softmax(classifier1.forward((premise_idx, hypothesis_idx))).detach()
+        z_hypoprime = inverter(c_hypoprime[0]['params'][0])
+        output3 = torch.nn.functional.softmax(mlp_classifier(z_prem, z_hypoprime))
+        loss4 = cross_entropy(output3, output2)
+        optimizer.zero_grad()
+        loss4.backward()
+        optimizer.step()
+#     print(c_hypoprime)
+
+    nhypo_idx = autoencoder.generate(c_hypoprime[0]['params'][0], 10, False)
+    return nhypo_idx.squeeze(0).cpu().numpy()
 
 def classifier_pred(pw, hw):
     classifier1.eval()
@@ -280,7 +355,7 @@ else:
         niter += 1
         batch = train_iter.next()
         for p, h, t, pw, hw, pl, hl in zip(*batch):
-            nh = perturb(criterion, p.cuda(), h.cuda(), t.cuda(), pw, hw, pl, hl)
+            nh = perturb_new(criterion, p.cuda(), h.cuda(), t.cuda(), pw, hw, pl, hl)
             print('--------------------------------')
             print('Target ', t)
             print(' '.join(pw))
