@@ -44,15 +44,25 @@ parser.add_argument('--classifier_path', type=str, required=True,
                     help='path to classifier files ./models')
 parser.add_argument('--z_size', type=int, default=100,
                     help='dimension of random noise z to feed into generator')
+parser.add_argument('--c_size', type=int, default=300,
+                    help='dimension of code c to feed into inverter and decoder')
 parser.add_argument('--load_pretrained', type=str, required=True,
                     help='load a pre-trained encoder and decoder to train the inverter')
 parser.add_argument('--surrogate-layers', type=str, default='100-50',
                     help='hidden layer sizes of the surrogate model')
 parser.add_argument('--perturb-budget', type=float, default=3e-2,
                     help='the budget for making perturbations by the adversary')
+parser.add_argument('--alpha', type=float, default=0.4,
+                    help='regulariser for retaining the original meaning of the input instance')
+#parser.add_argument('--perturb-z', action='store_true', 
+#                    help='add perturbation in the z space rather than in the c space')
+parser.add_argument('--input-c', action='store_true',
+                    help='use the c space as the direct input to the surrogate model')
 args = parser.parse_args()
 
 cur_dir = './output/%s/' % args.load_pretrained
+
+ALPHA = args.alpha
 
 with open(cur_dir + '/vocab.json', 'r') as fin:
     corpus_vocab = json.load(fin)
@@ -72,7 +82,7 @@ EPS = args.perturb_budget
 
 
 autoencoder = torch.load(open(cur_dir + '/models/autoencoder_model.pt', 'rb'))
-#gan_gen = torch.load(open(cur_dir + '/models/gan_gen_model.pt', 'rb'))
+gan_gen = torch.load(open(cur_dir + '/models/gan_gen_model.pt', 'rb'))
 #gan_disc = torch.load(open(cur_dir + '/models/gan_disc_model.pt', 'rb'))
 inverter = torch.load(open(cur_dir + '/models/inverter_model.pt', 'rb'))
 
@@ -81,7 +91,11 @@ classifier1 = Baseline_Embeddings(100, vocab_size=args.vocab_size)
 classifier1.load_state_dict(torch.load(args.classifier_path + "/baseline/emb.pt"))
 vocab_classifier1 = pkl.load(open(args.classifier_path + "/vocab.pkl", 'rb'))
 
-mlp_classifier = MLPClassifier(args.z_size * 2, 3, layers=args.surrogate_layers)
+
+if args.input_c:
+    mlp_classifier = MLPClassifier(args.c_size * 2, 3, layers=args.surrogate_layers)
+else:
+    mlp_classifier = MLPClassifier(args.z_size * 2, 3, layers=args.surrogate_layers)
 if not args.train_mode:
     mlp_classifier.load_state_dict(torch.load(args.save_path+'/surrogate{0}.pt'.format(args.surrogate_layers)))
 
@@ -123,7 +137,7 @@ if args.cuda:
     autoencoder.gpu = True
     autoencoder = autoencoder.cuda()
     autoencoder.start_symbols = autoencoder.start_symbols.cuda()
-    #gan_gen = gan_gen.cuda()
+    gan_gen = gan_gen.cuda()
     #gan_disc = gan_disc.cuda()
     classifier1 = classifier1.cuda()
     inverter = inverter.cuda()
@@ -132,13 +146,13 @@ else:
     autoencoder.gpu = False
     autoencoder = autoencoder.cpu()
     autoencoder.start_symbols = autoencoder.start_symbols.cpu()
-    #gan_gen = gan_gen.cpu()
+    gan_gen = gan_gen.cpu()
     #gan_disc = gan_disc.cpu()
     classifier1 = classifier1.cpu()
     inverter = inverter.cpu()
     mlp_classifier = mlp_classifier.cpu()
 
-def train_process(premise, hypothesis, target, premise_words, hypothesis_words, premise_length, hypothesis_length):
+def train_process(premise, hypothesis, target, premise_words, hypothesis_words, premise_length, hypothesis_length, input_c):
     #mx = target.max().item()
     #assert(mx >= 0 and mx < 3)
     #for s, s_w in zip(premise, premise_words):
@@ -157,14 +171,20 @@ def train_process(premise, hypothesis, target, premise_words, hypothesis_words, 
     hypothesis_idx = torch.tensor([[corpus_vocab.get(w, 3) for w in s] for s in hypothesis_words]).cuda()
 
     c_prem = autoencoder.encode(premise_idx, premise_length, noise=False)
-    z_prem = inverter(c_prem).detach()
 
     c_hypo = autoencoder.encode(hypothesis_idx, hypothesis_length, noise=False)
-    z_hypo = inverter(c_hypo).detach()
+
+    if input_c:
+        c_prem = c_prem.detach()
+        c_hypo = c_hypo.detach()
+        output = mlp_classifier(c_prem, c_hypo)
+    else:
+        z_prem = inverter(c_prem).detach()
+        z_hypo = inverter(c_hypo).detach()
+        output = mlp_classifier(z_prem, z_hypo)
 
     # z_comb = nn.cat((z_prem, z_hypo), 0).detach()
 
-    output = mlp_classifier(z_prem, z_hypo)
     gold = classifier1((premise, hypothesis)).detach()
 
     #print(output.shape, flush=True)
@@ -182,11 +202,12 @@ def train_process(premise, hypothesis, target, premise_words, hypothesis_words, 
     return loss.item(), acc, acc_surrogate
 
 
-def perturb(criterion, premise, hypothesis, target, premise_words, hypothesis_words, premise_length, hypothesis_length):
+def perturb(criterion, premise, hypothesis, target, premise_words, hypothesis_words, premise_length, hypothesis_length, input_c):
     autoencoder.eval()
     inverter.eval()
     classifier1.eval()
     mlp_classifier.eval()
+    gan_gen.eval()
 
     premise_words = [premise_words]
     hypothesis_words = [hypothesis_words]
@@ -198,26 +219,37 @@ def perturb(criterion, premise, hypothesis, target, premise_words, hypothesis_wo
     hypothesis_idx = torch.tensor([[corpus_vocab.get(w, 3) for w in s] for s in hypothesis_words]).cuda()
 
     c_prem = autoencoder.encode(premise_idx, premise_length, noise=False)
-    z_prem = inverter(c_prem).detach()
+    c_hypo = autoencoder.encode(hypothesis_idx, hypothesis_length, noise=False)
 
-    c_hypo = autoencoder.encode(hypothesis_idx, hypothesis_length, noise=False).detach()
-    c_hypo.requires_grad = True
-    z_hypo = inverter(c_hypo)
+    if input_c:
+        z_prem = c_prem.detach()
+        z_hypo = c_hypo.detach()
+    else:
+        z_prem = inverter(c_prem).detach()
+        z_hypo = inverter(c_hypo).detach()
+    z_hypo.requires_grad = True
 
-
+    # forgot why I did this
     premise = premise.unsqueeze(0)
     hypothesis = hypothesis.unsqueeze(0)
     target = target.unsqueeze(0)
+    reg_target = torch.ones(1, dtype=torch.int64).cuda()
     
     output = mlp_classifier(z_prem, z_hypo)
+    z_hypo_detached = z_hypo.detach()
+    reg_output1 = mlp_classifier(z_hypo_detached, z_hypo)
+    reg_output2 = mlp_classifier(z_hypo, z_hypo_detached)
 
-    loss = criterion(output, target)
+
+    loss = criterion(output, target) - ALPHA * (criterion(reg_output1, reg_target) + criterion(reg_output2, reg_target))
     mlp_classifier.zero_grad()
     inverter.zero_grad()
     loss.backward()
 
-    direction = torch.sign(c_hypo.grad)
-    nc_hypo = c_hypo + EPS * direction
+    direction = torch.sign(z_hypo.grad)
+    nc_hypo = z_hypo + EPS * direction
+    if not input_c:
+        nc_hypo = gan_gen(nc_hypo)
     nhypo_idx = autoencoder.generate(nc_hypo, 10, False)
 
     return nhypo_idx.squeeze(0).cpu().numpy()
@@ -250,7 +282,7 @@ if args.train_mode:
                 hypothesis = hypothesis.cuda()
                 target = target.cuda()
 
-            loss, acc, acc_surrogate = train_process(premise, hypothesis, target, premise_words, hypothesis_words, premise_length, hypothesis_length)
+            loss, acc, acc_surrogate = train_process(premise, hypothesis, target, premise_words, hypothesis_words, premise_length, hypothesis_length, args.input_c)
             loss_total += loss
             accuracy_sum += acc
             accuracy_surrogate_sum += acc_surrogate
@@ -276,17 +308,49 @@ else:
     niter = 0
 
     idx2words = dict(map(lambda x: (x[1], x[0]), corpus_vocab.items()))
+
+    succ_dec = 0
+    old_correct = 0
+    new_correct = 0
+    tot = 0
+    classes_cnt = [0, 0, 0]
+
     while niter < len(testloader):
         niter += 1
         batch = train_iter.next()
         for p, h, t, pw, hw, pl, hl in zip(*batch):
-            nh = perturb(criterion, p.cuda(), h.cuda(), t.cuda(), pw, hw, pl, hl)
+            tot += 1
+            classes_cnt[t.item()] += 1
+            nh = perturb(criterion, p.cuda(), h.cuda(), t.cuda(), pw, hw, pl, hl, args.input_c)
             print('--------------------------------')
             print('Target ', t)
             print(' '.join(pw))
             print(' '.join(hw))
             nhw = (['<sos>'] + [idx2words[i] for i in nh])[:10]
+            try:
+                idx = nhw.index('<eos>')
+            except:
+                idx = len(nhw)
+            nhw = nhw[:idx]
+            for i in range(idx, 10):
+                nhw.append('<pad>')
             print(' '.join(nhw))
-            print('Old ', classifier_pred(pw, hw))
-            print('New ', classifier_pred(pw, nhw))
+
+            old_pred = classifier_pred(pw, hw)
+            new_pred = classifier_pred(pw, nhw)
+            print('Old ', old_pred)
+            print('New ', new_pred)
+            
+            if old_pred[t.item()] > new_pred[t.item()]:
+                succ_dec += 1
+
+            if np.argmax(old_pred) == t.item():
+                old_correct += 1
+
+            if np.argmax(new_pred) == t.item():
+                new_correct += 1
+    print('Success rate: %.3f' % (100.0 * succ_dec / tot))
+    print('Old accuracy: %.3f' % (100.0 * old_correct / tot))
+    print('New accuracy: %.3f' % (100.0 * new_correct / tot))
+    print('Class cnt: ', [x / tot for x in classes_cnt])
 
