@@ -247,45 +247,25 @@ def perturb_new(criterion, premise, hypothesis, target, premise_words, hypothesi
     c_prem = autoencoder.encode(premise_idx, premise_length, noise=False)
     z_prem = inverter(c_prem).detach()
 
-    c_hypo = autoencoder.encode(hypothesis_idx, hypothesis_length, noise=False).detach()
-    c_hypo.requires_grad = True
+#     c_hypo = autoencoder.encode(hypothesis_idx, hypothesis_length, noise=False).detach()
+#     c_hypo.requires_grad = True
+    c_hypo = autoencoder.encode(hypothesis_idx, hypothesis_length, noise=False)
     z_hypo = inverter(c_hypo)
-
+    
     premise = premise.unsqueeze(0)
     hypothesis = hypothesis.unsqueeze(0)
     target = target.unsqueeze(0)
 
-#     output = torch.nn.functional.softmax(mlp_classifier(z_prem, z_hypo))
-#     output2 = torch.nn.functional.softmax(classifier1.forward((premise_idx, hypothesis_idx))).detach()
-#     print("output")
-#     print(output)
-#     print("output2")
-#     print(output2)
-
-#     loss = criterion(output, target)
     mlp_classifier.zero_grad()
     inverter.zero_grad()
-#     loss.backward()
-#     loss2 = criterion(output2, target)
-
-#     direction = torch.sign(c_hypo.grad)
-#     nc_hypo = c_hypo + EPS * direction
-#     nhypo_idx = autoencoder.generate(nc_hypo, 10, False)
-#     z_hypoprime = inverter(nc_hypo).detach()
-
-#     output3 = torch.nn.functional.softmax(mlp_classifier(z_prem, z_hypoprime))
-#     print("output3")
-#     print(output3)
-#     loss3 = criterion(output3, target)
-#     print(loss3)
-
-#     loss4 = cross_entropy(output3, output2)
-#     print("loss4")
-#     print(loss4)
-
-    c_hypoprime = [{'params': c_hypo}]
-    optimizer = torch.optim.Adam(c_hypoprime)
-    for i in range(1000):
+    
+    temp = torch.Tensor(1, 300).fill_(0).cuda().detach()
+    temp.requires_grad=True
+    #c_hypoprime starts by having all zeroes
+   # print(temp)
+    c_hypoprime = [{'params': temp}]
+    optimizer = torch.optim.Adam(c_hypoprime, lr=1e-4)
+    for i in range(5000):
         output2 = torch.nn.functional.softmax(classifier1.forward((premise_idx, hypothesis_idx))).detach()
         z_hypoprime = inverter(c_hypoprime[0]['params'][0])
         output3 = torch.nn.functional.softmax(mlp_classifier(z_prem, z_hypoprime))
@@ -293,8 +273,8 @@ def perturb_new(criterion, premise, hypothesis, target, premise_words, hypothesi
         optimizer.zero_grad()
         loss4.backward()
         optimizer.step()
-#     print(c_hypoprime)
-
+        #print(loss4)
+    
     nhypo_idx = autoencoder.generate(c_hypoprime[0]['params'][0], 10, False)
     return nhypo_idx.squeeze(0).cpu().numpy()
 
@@ -306,6 +286,21 @@ def classifier_pred(pw, hw):
 
     return F.softmax(classifier1((premise_idx, hypothesis_idx)), 1).squeeze(0).cpu().detach().numpy()
     
+def maximum(array):
+    a = array[0]
+    idx = 0
+    for i in range(1, 3):
+        if(a < array[i]):
+            idx = i
+            a = array[i]
+    return idx
+
+def cross_entropy(p, q):
+    q = torch.log(q)
+    a = p * q
+    a = torch.sum(a)
+    a = -a
+    return a
 
 if args.train_mode:
     # evaluate_model()
@@ -347,21 +342,32 @@ else:
     # gen perturbations
 
     criterion = nn.CrossEntropyLoss().cuda()
-    
+
     niter = 0
 
     idx2words = dict(map(lambda x: (x[1], x[0]), corpus_vocab.items()))
+    oldcorrect = 0
+    newcorrect = 0
     while niter < len(testloader):
         niter += 1
         batch = train_iter.next()
         for p, h, t, pw, hw, pl, hl in zip(*batch):
-            nh = perturb_new(criterion, p.cuda(), h.cuda(), t.cuda(), pw, hw, pl, hl)
+            nh = perturb(criterion, p.cuda(), h.cuda(), t.cuda(), pw, hw, pl, hl)
             print('--------------------------------')
             print('Target ', t)
             print(' '.join(pw))
             print(' '.join(hw))
             nhw = (['<sos>'] + [idx2words[i] for i in nh])[:10]
             print(' '.join(nhw))
-            print('Old ', classifier_pred(pw, hw))
-            print('New ', classifier_pred(pw, nhw))
-
+            oldpred = classifier_pred(pw, hw)
+            newpred = classifier_pred(pw, nhw)
+            print('Old ', oldpred)
+            print('New ', newpred)
+            print('Old Prediction: ' + str(maximum(oldpred)))
+            print('New Prediction: ' + str(maximum(newpred)))
+            if(maximum(oldpred) == t.item()):
+                oldcorrect = oldcorrect + 1
+            if(maximum(newpred) == t.item()):
+                newcorrect = newcorrect +1
+print('oldcorrect: ' + str(oldcorrect))
+print('newcorrect: ' + str(newcorrect))

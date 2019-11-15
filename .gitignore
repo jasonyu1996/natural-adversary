@@ -106,3 +106,5 @@ text/*.txt
 text/data/classifier/*.pkl
 text/surrogate/
 *.pt
+
+text/game_output
