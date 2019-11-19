@@ -6,6 +6,7 @@ from utils import to_gpu, Corpus, batchify, SNLIDataset, collate_snli
 import random
 import pickle as pkl
 import torch
+import scipy
 import numpy as np
 import torch.optim as optim
 import torch.nn as nn
@@ -58,6 +59,16 @@ parser.add_argument('--alpha', type=float, default=0.4,
 #                    help='add perturbation in the z space rather than in the c space')
 parser.add_argument('--input-c', action='store_true',
                     help='use the c space as the direct input to the surrogate model')
+parser.add_argument('--hsearch', action='store_true',
+                    help='directly constructs an adversarial example')
+parser.add_argument('--perturb-itern', type=int, default=50,
+                    help='perturbation iteration number')
+parser.add_argument('--perturb-rinitn', type=int, default=1,
+                    help='perturbation random initialisation number')
+parser.add_argument('--perturb-random', action='store_true',
+                    help='use purely random perturbations')
+parser.add_argument('--lstm', action='store_true',
+                    help='use LSTM as the victim model (rather than the embedding)')
 args = parser.parse_args()
 
 cur_dir = './output/%s/' % args.load_pretrained
@@ -86,9 +97,12 @@ gan_gen = torch.load(open(cur_dir + '/models/gan_gen_model.pt', 'rb'))
 #gan_disc = torch.load(open(cur_dir + '/models/gan_disc_model.pt', 'rb'))
 inverter = torch.load(open(cur_dir + '/models/inverter_model.pt', 'rb'))
 
-classifier1 = Baseline_Embeddings(100, vocab_size=args.vocab_size)
-#classifier1 = Baseline_LSTM(100,300,maxlen=args.maxlen, gpu=args.cuda)
-classifier1.load_state_dict(torch.load(args.classifier_path + "/baseline/emb.pt"))
+if not args.lstm:
+    classifier1 = Baseline_Embeddings(100, vocab_size=args.vocab_size)
+    classifier1.load_state_dict(torch.load(args.classifier_path + "/baseline/emb.pt"))
+else:
+    classifier1 = Baseline_LSTM(100,300,maxlen=args.maxlen, gpu=args.cuda)
+    classifier1.load_state_dict(torch.load(args.classifier_path + '/baseline/model_lstm.pt'))
 vocab_classifier1 = pkl.load(open(args.classifier_path + "/vocab.pkl", 'rb'))
 
 
@@ -202,7 +216,38 @@ def train_process(premise, hypothesis, target, premise_words, hypothesis_words, 
     return loss.item(), acc, acc_surrogate
 
 
-def perturb(criterion, premise, hypothesis, target, premise_words, hypothesis_words, premise_length, hypothesis_length, input_c):
+def classifier_pred(pw, hw, idx=False):
+    classifier1.eval()
+
+    if idx:
+        premise_idx = pw
+        hypothesis_idx = hw
+    else:
+        premise_idx = torch.tensor([vocab_classifier1.get(w, 3) for w in pw]).cuda().unsqueeze(0)
+        hypothesis_idx = torch.tensor([vocab_classifier1.get(w, 3) for w in hw]).cuda().unsqueeze(0)
+
+    return F.softmax(classifier1((premise_idx, hypothesis_idx)), 1).squeeze(0).cpu().detach().numpy()
+    
+
+def normalised_decode(nh):
+    nhw = (['<sos>'] + [idx2words[i] for i in nh])[:10]
+    try:
+        idx = nhw.index('<eos>')
+    except:
+        idx = len(nhw)
+    nhw = nhw[:idx]
+    for i in range(idx, 10):
+        nhw.append('<pad>')
+    return nhw
+
+def compute_kl_div(premise_words, z_hypo, gold):
+    #print(z_hypo.shape)
+    nhw = normalised_decode(autoencoder.generate(gan_gen(z_hypo), 10, False).squeeze(0).cpu().numpy())
+    #print(nhw)
+    out = classifier_pred(premise_words[0], nhw)
+    return F.kl_div(torch.log(torch.tensor(out, device=gold.device)), gold).cpu().item()
+
+def perturb(criterion, premise, hypothesis, target, premise_words, hypothesis_words, premise_length, hypothesis_length, input_c, hsearch):
     autoencoder.eval()
     inverter.eval()
     classifier1.eval()
@@ -221,48 +266,72 @@ def perturb(criterion, premise, hypothesis, target, premise_words, hypothesis_wo
     c_prem = autoencoder.encode(premise_idx, premise_length, noise=False)
     c_hypo = autoencoder.encode(hypothesis_idx, hypothesis_length, noise=False)
 
-    if input_c:
-        z_prem = c_prem.detach()
-        z_hypo = c_hypo.detach()
+    if hsearch:
+        ref_z_hypo = inverter(c_hypo)
+        best = (1e10, torch.randn_like(ref_z_hypo))
+        for k in range(0, args.perturb_rinitn):
+            z_hypo = torch.randn_like(ref_z_hypo)
+            z_hypo.requires_grad = True
+            if input_c:
+                z_prem = c_prem.detach()
+                gold = mlp_classifier(c_prem, c_hypo).detach()
+            else:
+                z_prem = inverter(c_prem).detach()
+                gold = mlp_classifier(z_prem, inverter(c_hypo)).detach()
+            gold = torch.exp(gold)
+            if not args.perturb_random:
+# when doing random perturbations, do not use any information from the surrogate model
+                perturb_optim = optim.SGD([z_hypo], lr=1e-2, momentum=0.9)
+                for i in range(0, args.perturb_itern):
+                    perturb_optim.zero_grad()
+                    if input_c:
+                        rz_hypo = gan_gen(z_hypo) # actually c
+                    else:
+                        rz_hypo = z_hypo
+                    n_output = mlp_classifier(z_prem, rz_hypo)
+                    loss = -torch.sum(n_output * gold)
+                    
+                    loss.backward()
+                    perturb_optim.step()
+            kl_div = compute_kl_div(premise_words, z_hypo, gold)
+            if kl_div < best[0]:
+                best = (kl_div, z_hypo)
+        
+        _, z_hypo = best
+        nc_hypo = gan_gen(z_hypo)
     else:
-        z_prem = inverter(c_prem).detach()
-        z_hypo = inverter(c_hypo).detach()
-    z_hypo.requires_grad = True
+        if input_c:
+            z_prem = c_prem.detach()
+            z_hypo = c_hypo.detach()
+        else:
+            z_prem = inverter(c_prem).detach()
+            z_hypo = inverter(c_hypo).detach()
+        z_hypo.requires_grad = True
 
-    # forgot why I did this
-    premise = premise.unsqueeze(0)
-    hypothesis = hypothesis.unsqueeze(0)
-    target = target.unsqueeze(0)
-    reg_target = torch.ones(1, dtype=torch.int64).cuda()
-    
-    output = mlp_classifier(z_prem, z_hypo)
-    z_hypo_detached = z_hypo.detach()
-    reg_output1 = mlp_classifier(z_hypo_detached, z_hypo)
-    reg_output2 = mlp_classifier(z_hypo, z_hypo_detached)
+        # forgot why I did this
+        premise = premise.unsqueeze(0)
+        hypothesis = hypothesis.unsqueeze(0)
+        target = target.unsqueeze(0)
+        reg_target = torch.ones(1, dtype=torch.int64).cuda()
+        
+        output = mlp_classifier(z_prem, z_hypo)
 
+        z_hypo_detached = z_hypo.detach()
+        reg_output1 = mlp_classifier(z_hypo_detached, z_hypo)
+        reg_output2 = mlp_classifier(z_hypo, z_hypo_detached)
+        loss = criterion(output, target) - ALPHA * (criterion(reg_output1, reg_target) + criterion(reg_output2, reg_target))
+        mlp_classifier.zero_grad()
+        inverter.zero_grad()
+        loss.backward()
 
-    loss = criterion(output, target) - ALPHA * (criterion(reg_output1, reg_target) + criterion(reg_output2, reg_target))
-    mlp_classifier.zero_grad()
-    inverter.zero_grad()
-    loss.backward()
-
-    direction = torch.sign(z_hypo.grad)
-    nc_hypo = z_hypo + EPS * direction
-    if not input_c:
-        nc_hypo = gan_gen(nc_hypo)
+        direction = torch.sign(z_hypo.grad)
+        
+        nc_hypo = z_hypo + EPS * direction
+        if not input_c:
+            nc_hypo = gan_gen(nc_hypo)
     nhypo_idx = autoencoder.generate(nc_hypo, 10, False)
 
     return nhypo_idx.squeeze(0).cpu().numpy()
-
-
-def classifier_pred(pw, hw):
-    classifier1.eval()
-
-    premise_idx = torch.tensor([vocab_classifier1.get(w, 3) for w in pw]).cuda().unsqueeze(0)
-    hypothesis_idx = torch.tensor([vocab_classifier1.get(w, 3) for w in hw]).cuda().unsqueeze(0)
-
-    return F.softmax(classifier1((premise_idx, hypothesis_idx)), 1).squeeze(0).cpu().detach().numpy()
-    
 
 if args.train_mode:
     # evaluate_model()
@@ -314,6 +383,9 @@ else:
     new_correct = 0
     tot = 0
     classes_cnt = [0, 0, 0]
+    classes_correct_cnt = [[[0 for i in range(0, 3)] for j in range(0, 3)] for k in range(0, 3)]
+    good_list = []
+    kl_div = 0.0
 
     while niter < len(testloader):
         niter += 1
@@ -321,19 +393,12 @@ else:
         for p, h, t, pw, hw, pl, hl in zip(*batch):
             tot += 1
             classes_cnt[t.item()] += 1
-            nh = perturb(criterion, p.cuda(), h.cuda(), t.cuda(), pw, hw, pl, hl, args.input_c)
+            nh = perturb(criterion, p.cuda(), h.cuda(), t.cuda(), pw, hw, pl, hl, args.input_c, args.hsearch)
             print('--------------------------------')
             print('Target ', t)
             print(' '.join(pw))
             print(' '.join(hw))
-            nhw = (['<sos>'] + [idx2words[i] for i in nh])[:10]
-            try:
-                idx = nhw.index('<eos>')
-            except:
-                idx = len(nhw)
-            nhw = nhw[:idx]
-            for i in range(idx, 10):
-                nhw.append('<pad>')
+            nhw = normalised_decode(nh)
             print(' '.join(nhw))
 
             old_pred = classifier_pred(pw, hw)
@@ -344,13 +409,33 @@ else:
             if old_pred[t.item()] > new_pred[t.item()]:
                 succ_dec += 1
 
-            if np.argmax(old_pred) == t.item():
+            old_label = np.argmax(old_pred)
+            new_label = np.argmax(new_pred)
+            if old_label == t.item():
                 old_correct += 1
 
-            if np.argmax(new_pred) == t.item():
+            if new_label == t.item():
                 new_correct += 1
+
+            kl_div += F.kl_div(torch.log(torch.tensor(new_pred)), torch.tensor(old_pred)).item()
+ 
+            classes_correct_cnt[t.item()][old_label][new_label] += 1
+            if t.item() == 0 and old_label == 0 and new_label == 0:
+                good_list.append((pw, hw, nhw))
+
     print('Success rate: %.3f' % (100.0 * succ_dec / tot))
     print('Old accuracy: %.3f' % (100.0 * old_correct / tot))
     print('New accuracy: %.3f' % (100.0 * new_correct / tot))
     print('Class cnt: ', [x / tot for x in classes_cnt])
+
+    for i in range(0, 3):
+        old_correct_cnt = sum(classes_correct_cnt[i][i])
+        print('Class %d adversarial accuracy = %.5f%% (%d/%d)' % (i, classes_correct_cnt[i][i][i] / old_correct_cnt * 100, \
+                classes_correct_cnt[i][i][i],\
+                old_correct_cnt))
+    print('Average KL divergence: %.5f' % (kl_div / tot))
+
+    with open('hit.pkl', 'wb') as fout:
+        pkl.dump(good_list, fout)
+    
 
