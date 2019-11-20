@@ -69,6 +69,8 @@ parser.add_argument('--perturb-random', action='store_true',
                     help='use purely random perturbations')
 parser.add_argument('--lstm', action='store_true',
                     help='use LSTM as the victim model (rather than the embedding)')
+parser.add_argument('--perturb-vicinity', action='store_true',
+                    help='add small, random perturbations to the hypothesis')
 args = parser.parse_args()
 
 cur_dir = './output/%s/' % args.load_pretrained
@@ -299,6 +301,21 @@ def perturb(criterion, premise, hypothesis, target, premise_words, hypothesis_wo
         
         _, z_hypo = best
         nc_hypo = gan_gen(z_hypo)
+    elif args.perturb_vicinity:
+# can't use the inverter (looks like it's broken)
+        assert(input_c)
+        best = (1e10, torch.randn_like(c_hypo) * args.perturb_budget)
+        for k in range(0, args.perturb_rinitn):
+            delta_c_hypo = torch.randn_like(c_hypo) * args.perturb_budget
+            nc_hypo = c_hypo + delta_c_hypo
+            nhypo = normalised_decode(autoencoder.generate(nc_hypo, 10, False).squeeze(0).cpu().numpy())
+            out = classifier_pred(premise_words[0], nhypo)
+            loss = -np.log(out)[0]
+            if loss < best[0]:
+                best = (loss, delta_c_hypo)
+
+        _, delta_c_hypo = best
+        nc_hypo = c_hypo + delta_c_hypo
     else:
         if input_c:
             z_prem = c_prem.detach()
