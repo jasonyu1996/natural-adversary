@@ -35,7 +35,7 @@ parser.add_argument('--seed', type=int, default=1111,
                     help='seed')
 parser.add_argument('--beta1', type=float, default=0.9,
                     help='beta1 for adam. default=0.9')
-parser.add_argument('--cuda', action='store_true', default=True,
+parser.add_argument('--cuda', action='store_true',
                     help='use CUDA')
 parser.add_argument('--save_path', type=str, required=True,
                     help='used for saving the models')
@@ -94,17 +94,17 @@ EPS = args.perturb_budget
 
 
 
-autoencoder = torch.load(open(cur_dir + '/models/autoencoder_model.pt', 'rb'))
-gan_gen = torch.load(open(cur_dir + '/models/gan_gen_model.pt', 'rb'))
+autoencoder = torch.load(open(cur_dir + '/models/autoencoder_model.pt', 'rb'), map_location='cpu')
+gan_gen = torch.load(open(cur_dir + '/models/gan_gen_model.pt', 'rb'), map_location='cpu')
 #gan_disc = torch.load(open(cur_dir + '/models/gan_disc_model.pt', 'rb'))
-inverter = torch.load(open(cur_dir + '/models/inverter_model.pt', 'rb'))
+inverter = torch.load(open(cur_dir + '/models/inverter_model.pt', 'rb'), map_location='cpu')
 
 if not args.lstm:
     classifier1 = Baseline_Embeddings(100, vocab_size=args.vocab_size)
-    classifier1.load_state_dict(torch.load(args.classifier_path + "/baseline/emb.pt"))
+    classifier1.load_state_dict(torch.load(args.classifier_path + "/baseline/model_emb.pt", map_location='cpu'))
 else:
     classifier1 = Baseline_LSTM(100,300,maxlen=args.maxlen, gpu=args.cuda)
-    classifier1.load_state_dict(torch.load(args.classifier_path + '/baseline/model_lstm.pt'))
+    classifier1.load_state_dict(torch.load(args.classifier_path + '/baseline/model_lstm.pt', map_location='cpu'))
 vocab_classifier1 = pkl.load(open(args.classifier_path + "/vocab.pkl", 'rb'))
 
 
@@ -183,8 +183,11 @@ def train_process(premise, hypothesis, target, premise_words, hypothesis_words, 
     #print(premise.max().item(), flush=True)
     #print(hypothesis.max().item(), flush=True)
 
-    premise_idx = torch.tensor([[corpus_vocab.get(w, 3) for w in s] for s in premise_words]).cuda()
-    hypothesis_idx = torch.tensor([[corpus_vocab.get(w, 3) for w in s] for s in hypothesis_words]).cuda()
+    premise_idx = torch.tensor([[corpus_vocab.get(w, 3) for w in s] for s in premise_words])
+    hypothesis_idx = torch.tensor([[corpus_vocab.get(w, 3) for w in s] for s in hypothesis_words])
+    if args.cuda:
+        premise_idx = premise_idx.cuda()
+        hypothesis_idx = hypothesis_idx.cuda()
 
     c_prem = autoencoder.encode(premise_idx, premise_length, noise=False)
 
@@ -225,8 +228,12 @@ def classifier_pred(pw, hw, idx=False):
         premise_idx = pw
         hypothesis_idx = hw
     else:
-        premise_idx = torch.tensor([vocab_classifier1.get(w, 3) for w in pw]).cuda().unsqueeze(0)
-        hypothesis_idx = torch.tensor([vocab_classifier1.get(w, 3) for w in hw]).cuda().unsqueeze(0)
+        premise_idx = torch.tensor([vocab_classifier1.get(w, 3) for w in pw]).unsqueeze(0)
+        hypothesis_idx = torch.tensor([vocab_classifier1.get(w, 3) for w in hw]).unsqueeze(0)
+        if args.cuda:
+            premise_idx = premise_idx.cuda()
+            hypothesis_idx = hypothesis_idx.cuda()
+
 
     return F.softmax(classifier1((premise_idx, hypothesis_idx)), 1).squeeze(0).cpu().detach().numpy()
     
@@ -262,8 +269,12 @@ def perturb(criterion, premise, hypothesis, target, premise_words, hypothesis_wo
     hypothesis_length = [hypothesis_length]
 
 
-    premise_idx = torch.tensor([[corpus_vocab.get(w, 3) for w in s] for s in premise_words]).cuda()
-    hypothesis_idx = torch.tensor([[corpus_vocab.get(w, 3) for w in s] for s in hypothesis_words]).cuda()
+    premise_idx = torch.tensor([[corpus_vocab.get(w, 3) for w in s] for s in premise_words])
+    hypothesis_idx = torch.tensor([[corpus_vocab.get(w, 3) for w in s] for s in hypothesis_words])
+
+    if args.cuda:
+        premise_idx = premise_idx.cuda()
+        hypothesis_idx = hypothesis_idx.cuda()
 
     c_prem = autoencoder.encode(premise_idx, premise_length, noise=False)
     c_hypo = autoencoder.encode(hypothesis_idx, hypothesis_length, noise=False)
@@ -329,7 +340,10 @@ def perturb(criterion, premise, hypothesis, target, premise_words, hypothesis_wo
         premise = premise.unsqueeze(0)
         hypothesis = hypothesis.unsqueeze(0)
         target = target.unsqueeze(0)
-        reg_target = torch.ones(1, dtype=torch.int64).cuda()
+        reg_target = torch.ones(1, dtype=torch.int64)
+        if args.cuda:
+            reg_target = reg_target.cuda()
+
         
         output = mlp_classifier(z_prem, z_hypo)
 
@@ -389,7 +403,9 @@ if args.train_mode:
 else:
     # gen perturbations
 
-    criterion = nn.CrossEntropyLoss().cuda()
+    criterion = nn.CrossEntropyLoss()
+    if args.cuda:
+        criterion = criterion.cuda()
     
     niter = 0
 
@@ -410,7 +426,11 @@ else:
         for p, h, t, pw, hw, pl, hl in zip(*batch):
             tot += 1
             classes_cnt[t.item()] += 1
-            nh = perturb(criterion, p.cuda(), h.cuda(), t.cuda(), pw, hw, pl, hl, args.input_c, args.hsearch)
+            if args.cuda:
+                p = p.cuda()
+                h = h.cuda()
+                t = t.cuda()
+            nh = perturb(criterion, p, h, t, pw, hw, pl, hl, args.input_c, args.hsearch)
             print('--------------------------------')
             print('Target ', t)
             print(' '.join(pw))
